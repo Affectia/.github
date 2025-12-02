@@ -1,276 +1,366 @@
-# SER + FER — Speech Emotion Recognition & Face Emotion Recognition (Live Feed Edition)
+# SER + FER — Speech Emotion Recognition & Face Emotion Recognition (Real-Time, Advanced Edition)
 
-> **A cute, detailed, step-by-step project README for building a multimodal emotion recognition system that works in real-time**
->
-> *UwU — hi! this version uses live user audio & camera feed to detect emotions in real time! i'll walk you through every tiny detail from prototype to production with sparkles and love owo*
+> **Professional guide** for building a production-grade, low-latency multimodal emotion system with live 3D avatar visualization. This version replaces playful tone with a professional, implementation-first style and adds: 3D avatar frontends controllable by backend emotion outputs, integration with **SenseVoice** for SER, concrete data contracts, and engineering-level notes for deployment and optimization.
 
 ---
 
 ## Table of contents
 
-1. [Project overview](#project-overview)
-2. [Goals & success criteria](#goals--success-criteria)
-3. [Real-time architecture overview](#architecture)
-4. [Prototype — React Native + DeepFace + FastAPI (Live Stream Phase 0)](#prototype)
-5. [Advanced system — Golang backend + Flutter + ResNet-50 + Advanced SER (Phase 1)](#advanced)
-6. [SER (Speech Emotion Recognition) — real-time audio pipeline](#ser)
-7. [FER (Face Emotion Recognition) — live face tracking pipeline](#fer)
-8. [Multimodal fusion in live systems](#fusion)
-9. [Latency optimization, streaming protocols & infrastructure](#latency)
-10. [Datasets, fine-tuning, and live data considerations](#datasets)
-11. [Privacy & ethical concerns for live emotion data](#privacy)
-12. [Roadmap for live system evolution](#roadmap)
-13. [Appendix — cute tips & developer notes](#appendix)
+1. [Executive summary](#executive-summary)
+2. [High-level goals & success metrics](#goals)
+3. [System overview & real-time architecture](#overview)
+4. [Protocols & data contracts (messages)](#protocols)
+5. [Frontend 3D avatar integration](#frontend-3d)
+6. [SER: SenseVoice integration & audio pipeline](#ser-sensevoice)
+7. [FER: face tracking, AU extraction & head pose](#fer-advanced)
+8. [Multimodal fusion → avatar driving](#fusion-to-avatar)
+9. [Model serving, ops, and latency optimizations](#ops)
+10. [Privacy, security & consent engineering](#privacy)
+11. [Datasets, annotation, and live fine-tuning strategy](#datasets)
+12. [Monitoring, evaluation, and A/B experimentation](#monitoring)
+13. [Roadmap & phased delivery plan](#roadmap)
+14. [Appendix: schema examples, mapping tables, implementation notes]
 
 ---
 
-## Project overview <a name="project-overview"></a>
+## 1. Executive summary <a name="executive-summary"></a>
 
-This project is about recognizing **human emotions in real-time** using:
+This document describes a production-ready pipeline to infer user emotion continuously from live audio and camera streams (SER + FER) and drive **interactive 3D avatars** in the frontend. The intended product provides low-latency, privacy-preserving emotion feedback and expressive avatar control for applications such as virtual assistants, telepresence, educational software, game NPCs, and research tools.
 
-* **Speech Emotion Recognition (SER)** — listening to user’s voice feed.
-* **Face Emotion Recognition (FER)** — analyzing live camera frames.
+Key differentiators:
 
-The system continuously reads live streams from the user’s microphone and front-facing camera, runs them through deep learning models, and fuses the results to estimate the current emotion — updating every few hundred milliseconds.
-
-We'll start small with **React Native + FastAPI + DeepFace** for rapid prototyping, then move toward a fully **real-time, production-grade system** using **Golang**, **Flutter**, **ResNet-50**, and an advanced **SER model** (likely transformer-based). UwU 💫
-
----
-
-## Goals & success criteria <a name="goals--success-criteria"></a>
-
-**Prototype Goals:**
-
-* Stream live audio and video frames to backend.
-* FER runs using DeepFace on incoming frames (approx 2–3 FPS).
-* SER runs continuously on short (1–2 sec) audio windows.
-* End-to-end latency < 700ms.
-* Display live emotion feedback with emoji or color-coded UI.
-
-**Advanced System Goals:**
-
-* Real-time FER & SER with <150ms latency.
-* High accuracy and stability over varying light/noise.
-* Efficient model serving using ONNXRuntime / TensorRT.
-* Secure streaming with user consent and full encryption.
+* SER powered by **SenseVoice** for robust, low-latency speech emotion cues.
+* FER pipeline provides emotion probabilities, action-unit estimates, head pose, and eye-gaze.
+* Standardized JSON+binary streaming contracts for deterministic avatar control.
+* Avatar control outputs (blendshapes, bone transforms, viseme triggers) to produce natural, low-jitter animation.
+* End-to-end latency targets: **Phase 0: <200ms**, **Phase 1: <100ms** for on-prem GPU clusters or edge-accelerated instances.
 
 ---
 
-## Real-time architecture overview <a name="architecture"></a>
+## 2. Goals & success metrics <a name="goals"></a>
 
-### Prototype Flow
+**Functional goals**
 
+* Continuous emotion inference from live microphone + front camera.
+* 3D avatar updates at interactive frame rates (30–60 FPS) while receiving emotion updates at 10–60 Hz.
+* Lip-sync/viseme control derived from audio (SenseVoice or equivalent).
+* Robustness across devices, lighting, and noisy environments.
+
+**Success metrics**
+
+* FER top-1 accuracy on held-out test: ≥75% (AffectNet-like domain adaptation).
+* SER classification F1: ≥0.70 on in-domain tests (SenseVoice fine-tune + augmentation).
+* Avatar perceptual quality: mean rating ≥4/5 in user studies for emotional fidelity.
+* End-to-end 95th percentile latency: <200ms (Phase 0) and <100ms (Phase 1).
+* Jitter (avatar parameter variance between consecutive frames after smoothing): <5%.
+
+---
+
+## 3. System overview & real-time architecture <a name="overview"></a>
+
+### Components
+
+* **Client (Mobile/Web/VR)** — captures camera + mic, hosts 3D renderer (Three.js / React Three Fiber / Babylon / Unity / Unreal), and receives avatar instructions.
+* **Gateway / Ingest** — WebRTC or WebSocket gateway that receives streams and forwards to inference services.
+* **Inference Cluster** — model servers for FER (vision) and SER (SenseVoice + optional fine-tuned models). Prefer Triton/ONNXRuntime with GPU acceleration.
+* **Fusion Service** — attention-weighted fusion of SER & FER embeddings → canonical emotion vector + avatar driving parameters.
+* **State & Pub/Sub** — Redis for ephemeral session state, Kafka/NATS for scaling updates.
+* **Analytics & Monitoring** — Prometheus + Grafana, plus custom perceptual telemetry.
+
+### Data flow
+
+1. Client opens a low-latency media session (WebRTC) with data channel or WebSocket fallback.
+2. Client sends periodic frames (or full media) to Gateway; audio frames are sent as PCM or Opus.
+3. Gateway forwards audio frames to SenseVoice + local SER models; forwards images to FER model worker.
+4. Inference workers push time-stamped emotion features to Fusion Service.
+5. Fusion Service computes avatar control parameters and publishes them to client via the same data channel.
+6. Client applies smoothing and drives the 3D avatar in real time.
+
+**Latency optimization points:** WebRTC for transport, model quantization (FP16/INT8), batching windows sized to balance latency vs throughput, and data channel compression for avatar messages.
+
+---
+
+## 4. Protocols & data contracts (messages) <a name="protocols"></a>
+
+Use compact, typed JSON or binary protobuf messages on a persistent data channel. Include `session_id`, `timestamp_ms`, and `sequence` to allow client reordering & interpolation.
+
+**Example JSON (emotion update):**
+
+```json
+{
+  "type": "emotion_update",
+  "session_id": "abc-123",
+  "timestamp_ms": 1700000123456,
+  "sequence": 234,
+  "payload": {
+    "emotion": "happy",
+    "scores": {"happy": 0.78, "neutral": 0.12, "sad": 0.05, "angry": 0.03},
+    "valence": 0.64,
+    "arousal": 0.32,
+    "au": {"au12_smile": 0.74, "au06_cheek_raise": 0.42},
+    "head_pose": {"yaw": 3.2, "pitch": -1.1, "roll": 0.2},
+    "gaze": {"x": 0.02, "y": -0.01},
+    "speaking_probability": 0.86
+  }
+}
 ```
-React Native App
- ├── Camera Stream (WebRTC / periodic snapshots)
- ├── Microphone Stream (short chunks → WebSocket)
- ↓
-FastAPI Server
- ├── Live Inference Loop
- │     ├── FER → DeepFace
- │     └── SER → CNN-based Spectrogram model
- ├── Fusion Layer → combined emotion
- ↓
-Real-time emotion updates to client (WebSocket / SSE)
+
+**Avatar control message (reduced to the minimal fields for frame-rate):**
+
+```json
+{
+  "type": "avatar_frame",
+  "session_id": "abc-123",
+  "timestamp_ms": 1700000123457,
+  "sequence": 235,
+  "payload": {
+    "blendshapes": {"smile": 0.78, "brow_up": 0.12, "frown": 0.02},
+    "bone_transforms": {"neck_pitch": -1.1, "head_yaw": 3.2},
+    "viseme": "VV5",
+    "viseme_conf": 0.88,
+    "particles": {"glow_intensity": 0.2}
+  }
+}
 ```
 
-### Advanced Flow
+**Notes:** message size should be kept small; use integer quantization or CBOR/protobuf for production.
 
+---
+
+## 5. Frontend 3D avatar integration <a name="frontend-3d"></a>
+
+### Rendering platforms & libraries
+
+* **Web**: Three.js with React Three Fiber (r3f) or Babylon.js.
+* **Mobile**: Unity (via flutter_unity_widget or native), Unreal, or native OpenGL/Metal via SceneKit (iOS) or Filament (Android).
+* **Cross-platform**: Unity provides fastest iteration for expressive avatars; r3f is excellent for web UIs and prototypes.
+
+### Avatar rigging & asset format
+
+* Use GLTF 2.0 for web-friendly assets.
+* Rig must expose **blendshape/morph target** controls for facial expressions and **bones** for head/neck/upper-body motion.
+* Provide viseme blendshapes or phoneme-to-viseme mapping.
+
+### Real-time control loop (client)
+
+1. Receive `avatar_frame` messages on data channel.
+2. Apply smoothing (EMA or critically-damped spring) to each parameter.
+3. Map normalized values to blendshape/morph target weights (0–1).
+4. Apply bone rotations with SLERP for continuity.
+5. Run the renderer at 60 FPS and update visuals; avatar parameters can update at 10–60 Hz.
+
+### Lip-sync & visemes
+
+* Use SenseVoice phoneme/viseme outputs where available, or compute audio energy → viseme fallback.
+* Trigger viseme blendshape transitions with short crossfades (30–60 ms) to avoid popping.
+
+### Example client-side libraries & modules
+
+* React: `@react-three/fiber`, `three/examples/jsm/loaders/GLTFLoader`, `drei` utilities.
+* Unity: use `PlayableGraph` and `Animation Rigging` to map blendshapes & bone transforms.
+* Flutter: `flutter_unity_widget` for Unity integration or `flutter_gl` + custom shader pipeline for GLTF rendering.
+
+---
+
+## 6. SER: SenseVoice integration & audio pipeline <a name="ser-sensevoice"></a>
+
+### Why SenseVoice
+
+SenseVoice provides low-latency, production-ready speech emotion features (prosody, sentiment, stress markers). Use it as a primary SER engine for robustness and speed, and complement it with an in-house fine-tuned model for domain adaptation.
+
+### Audio capture & preprocessing
+
+* Capture audio at 16 kHz mono PCM (or 16/24 kHz if higher fidelity is needed).
+* Use short overlapping windows (e.g., 1s windows with 50% overlap) for near-instant emotion responsiveness.
+* Apply voice activity detection (VAD) to avoid sending silence-heavy payloads.
+
+### Integration pattern
+
+1. Client sends short encoded PCM frames to Gateway (WebRTC datachannel or RPC).
+2. Gateway forwards or streams to SenseVoice (via SDK or REST/gRPC endpoint) for real-time emotion signals and phoneme/viseme timestamps.
+3. SenseVoice returns: emotional scores, speech activity, phoneme timestamps, speaking probability, and optionally spectral features.
+4. Use SenseVoice output as a primary SER signal; fuse with an in-house model if customization is required.
+
+### Latency & throughput
+
+* Configure SenseVoice to return streaming partial hypotheses (low-latency incremental output) if available.
+* Use audio chunking to avoid large buffering; recommended max buffer: 500–1000 ms to keep latency low.
+
+### Fallbacks
+
+* If SenseVoice unavailable, run an embedded lightweight SER model on-device (edge) to provide a degraded but immediate experience.
+
+---
+
+## 7. FER: face tracking, AU extraction & head pose <a name="fer-advanced"></a>
+
+### Core outputs
+
+* Per-frame emotion probabilities (neutral, sad, happy, angry, surprise, disgust, fear).
+* Facial Action Units (AUs) with intensity values (e.g., AU12, AU06, AU04), useful for direct mapping to blendshapes.
+* Head pose: yaw/pitch/roll.
+* Eye gaze vector (screen-relative) and blink detection.
+* Face tracking ID for multi-face sessions.
+
+### Detection & inference
+
+* Face detection: RetinaFace or BlazeFace for fast detection; use a light tracker to avoid re-detecting every frame.
+* FER model: ResNet-50 / EfficientNet variant fine-tuned on AffectNet, RAF-DB.
+* AU estimator: small dedicated head to predict AU intensities (can be multi-task joint model with FER).
+
+### On-device vs server
+
+* On-device FER (TFLite or CoreML) reduces network and privacy exposure but may be less accurate.
+* Server-side provides best accuracy and simplified model updates. Consider hybrid: lightweight on-device detection + server-side refinement.
+
+---
+
+## 8. Multimodal fusion → avatar driving <a name="fusion-to-avatar"></a>
+
+### Fusion strategy
+
+* **Late fusion with attention**: maintain per-modality embeddings; compute attention weights using confidence + context.
+* **Emotion canonicalization**: canonical emotion vector includes `valence`, `arousal`, `dominance`, `speaking_prob`, `AU_map`, `pose`.
+
+### Mapping to avatar parameters
+
+* **AU → blendshapes**: direct mapping (AU12 → smile weight). Use linear mapping with clamping & per-user calibration.
+* **Emotion scores → posture & micro-expressions**: e.g., high arousal → slight body lean forward + eye widening.
+* **Speaking probability + viseme → mouth shapes**: switch to audio-driven lip-sync during speech.
+* **Head pose smoothing**: combine detected head pose with small avatar exaggeration factor.
+
+### Smoothing & temporal filtering
+
+* Use exponential moving averages (α tuned per parameter) or critically-damped spring systems to remove jitter.
+* Maintain a short timeline buffer (200–500 ms) to interpolate and compensate for network jitter.
+
+### Consistency checks
+
+* If `speaking_probability` > 0.7, prioritize viseme-based mouth shapes over FER mouth-related AUs.
+* Use confidence thresholds to ignore low-confidence modality outputs.
+
+---
+
+## 9. Model serving, ops, and latency optimizations <a name="ops"></a>
+
+### Serving
+
+* Prefer Triton Inference Server or ONNXRuntime for GPU-accelerated model serving.
+* Expose gRPC and REST endpoints; use server-side batching for image workloads with micro-batches sized to keep latency low.
+
+### Optimization
+
+* Quantize models to FP16 or INT8 using calibration datasets.
+* Use CUDA/cuDNN and TensorRT for the vision stack.
+* For SER, use streaming-friendly encoders that support chunk-wise inference (no long context windows).
+
+### Autoscaling & resilience
+
+* Stateless workers behind a service mesh (Istio/linkerd) and autoscale using request latency and queue lengths.
+* Use backpressure mechanisms at Gateway to drop frames (gracefully) during overload.
+
+### Edge inference
+
+* For telepresence use-cases, deploy lightweight FER + SER to edge devices (NVIDIA Jetson / Apple Neural Engine / Android NNAPI) to get to <50 ms.
+
+---
+
+## 10. Privacy, security & consent engineering <a name="privacy"></a>
+
+* Require explicit consent flows before enabling camera/audio emotion streams.
+* Do not store raw audio/video without explicit opt-in; prefer storing anonymized embeddings if necessary and legally vetted.
+* Encrypt all traffic with TLS 1.3 and end-to-end encryption where feasible.
+* Provide a visible recording indicator and a one-click stop for users.
+* Implement data retention policies and tools to delete session data on request.
+
+---
+
+## 11. Datasets, annotation, and live fine-tuning strategy <a name="datasets"></a>
+
+* Start with AffectNet, RAF-DB, FER2013 for FER; RAVDESS, IEMOCAP, and in-domain voice datasets for SER.
+* Collect opt-in in-app examples for domain adaptation; label via a semi-supervised pipeline or human-in-the-loop annotation for quality.
+* Use continual learning with replay buffers; monitor model drift and biases across demographics.
+
+---
+
+## 12. Monitoring, evaluation, and A/B experimentation <a name="monitoring"></a>
+
+* Measure latency (p50/p95), inference confidences, session durations, and user opt-out rates.
+* Run perceptual A/B tests for avatar mapping strategies (direct AU mapping vs emotion-driven heuristics).
+* Track fairness metrics and false-positive rates for sensitive classes.
+
+---
+
+## 13. Roadmap & phased delivery plan <a name="roadmap"></a>
+
+**Phase 0 (Prototype, 2–6 weeks)**
+
+* React web demo with GLTF avatar (r3f), FastAPI backend, DeepFace/Light FER on server.
+* SenseVoice prototype integration for audio.
+* Basic fusion → avatar mapping and smoothing.
+
+**Phase 1 (MVP, 2–3 months)**
+
+* WebRTC gateway, Triton-based serving, Redis state store.
+* Unity mobile client with avatar rig, viseme support from SenseVoice.
+* Edge fallback for degraded connectivity.
+
+**Phase 2 (Scale & polish, 3–6 months)**
+
+* Full ResNet-50 FER + Wav2Vec2 hybrid SER fine-tuned with live data.
+* Quantized models, autoscaling cluster, monitoring, and compliance audit.
+
+**Phase 3 (Enterprise-grade, 6–12 months)**
+
+* Real-time personalization (per-user calibration), advanced attention-based fusion, and multi-lingual SER enhancements.
+
+---
+
+## 14. Appendix — schema examples, mapping tables, implementation notes <a name="appendix"></a>
+
+### 14.1 Sample avatar mapping table (AU → blendshape)
+
+| Action Unit | Description               |   Blendshape target |                         Mapping function |
+| ----------- | ------------------------- | ------------------: | ---------------------------------------: |
+| AU12        | Lip corner puller (smile) |       `blend_smile` | linear: weight = clamp(AU12 * 1.1, 0, 1) |
+| AU06        | Cheek raise               | `blend_cheek_raise` |                      linear with damping |
+| AU04        | Brow lower                |       `blend_frown` |         sigmoid mapping for smooth onset |
+
+### 14.2 Example pseudocode: client control loop
+
+```js
+// receives avatar_frame events and applies smoothing
+let state = { blendshapes: {}, bones: {} };
+function onAvatarFrame(msg) {
+  const payload = msg.payload;
+  for (const [k, v] of Object.entries(payload.blendshapes)) {
+    state.blendshapes[k] = smooth(state.blendshapes[k] || 0, v, 0.2);
+  }
+  applyToModel(state);
+}
+
+function smooth(prev, target, alpha) {
+  return prev * (1 - alpha) + target * alpha;
+}
 ```
-Flutter App
- ├── WebRTC for live media streams
- ↓
-Golang Gateway
- ├── gRPC Streams → Model Workers
- │     ├── FER (ResNet-50)
- │     └── SER (Wav2Vec2 / Transformer)
- ├── Fusion (attention-based)
- ↓
-Results returned every 200–400ms
-```
 
-**Core idea:** all processing happens in small time windows (sliding segments), so emotions appear smoothly updated — like a live emotion bar owo ✨
+### 14.3 Example mapping from emotion → avatar stylistic controls
 
----
+| Emotion | Avatar effect                                      | Parameters                               |
+| ------: | -------------------------------------------------- | ---------------------------------------- |
+|   Happy | Larger smile, eye crinkle, light particle sparkles | smile +0.8, au06 +0.4, particle_glow 0.2 |
+|     Sad | Slight gaze down, depressed shoulders              | head_pitch +3deg, body_slouch 0.3        |
 
-## Prototype — React Native + DeepFace + FastAPI (Live Stream Phase 0) <a name="prototype"></a>
+### 14.4 Recommended libraries & infra
 
-**Frontend:** React Native app that continuously:
+**Frontend**: Three.js, @react-three/fiber, GLTFLoader, Unity 2021+, AnimationRigging
 
-* Captures camera frames every N ms (e.g., 300–500ms).
-* Streams short audio chunks (2–3s) via WebSocket.
-* Displays current emotion + confidence.
+**Backend / Models**: Triton Server, ONNXRuntime, TensorRT, SenseVoice SDK, PyTorch Lightning for training
 
-**Backend (FastAPI):**
-
-* `/ws/predict` WebSocket endpoint for live updates.
-* Frame handler uses DeepFace to infer FER.
-* Audio handler performs short-term SER inference.
-* Results are fused and pushed back over WebSocket.
-
-**Sample workflow:**
-
-1. App connects to WebSocket.
-2. Sends live frames + audio.
-3. Server runs FER/SER asynchronously.
-4. Returns combined JSON updates like:
-
-   ```json
-   {
-     "emotion": "happy",
-     "confidence": 0.83,
-     "fer_conf": 0.81,
-     "ser_conf": 0.79,
-     "timestamp": 172,
-     "fps": 3.8
-   }
-   ```
-5. UI displays a glowing emoji or color-coded overlay uwu.
-
-**Implementation hints:**
-
-* Use `react-native-webrtc` or `expo-av` for camera & mic.
-* Use `react-native-sound-level` for continuous mic input.
-* Keep audio chunks small (e.g., 1s → WAV buffer → send to server).
-* FastAPI: use `websockets` or `starlette.websockets`.
+**Transport & infra**: WebRTC, gRPC, Kafka/NATS, Redis, Prometheus/Grafana
 
 ---
 
-## Advanced system — Golang backend + Flutter + ResNet-50 + Advanced SER <a name="advanced"></a>
+### Final notes
 
-* **Frontend (Flutter)**: true live streaming via WebRTC with adaptive bitrate.
-* **Backend (Go)**:
-
-  * WebRTC or WebSocket gateway.
-  * Audio/video frames → concurrent workers.
-  * Model inference handled via ONNXRuntime or Triton gRPC.
-* **Models:**
-
-  * FER: ResNet-50 trained on AffectNet + real user faces.
-  * SER: Wav2Vec2 / HuBERT fine-tuned for emotion.
-  * Fusion: weighted or attention-based fusion of embeddings.
-
-**Latency goals:** 50–150ms end-to-end.
-
-**Deployment:** GPU-enabled model serving cluster, Redis cache for streaming state, Kafka or NATS for pub/sub scaling.
-
----
-
-## SER (Speech Emotion Recognition) — real-time audio pipeline <a name="ser"></a>
-
-**Pipeline:**
-
-1. Capture raw PCM audio (16kHz mono).
-2. Split into overlapping chunks (e.g., 2s, 50% overlap).
-3. Convert to mel-spectrogram in stream.
-4. Feed into CNN or transformer encoder.
-5. Output emotion vector every ~1s.
-
-**Recommended models:**
-
-* Prototype: CNN-based spectrogram model.
-* Advanced: Wav2Vec2 fine-tuned for emotion.
-
-**Optimization:**
-
-* Maintain a rolling buffer of last N seconds.
-* Smooth predictions with EMA filter (to prevent jitter).
-
----
-
-## FER (Face Emotion Recognition) — live face tracking pipeline <a name="fer"></a>
-
-**Steps:**
-
-1. Capture camera frames (every 300–500ms or real-time stream).
-2. Detect faces (MTCNN or RetinaFace).
-3. Crop & resize → 224x224 → ResNet-50.
-4. Predict emotion + confidence.
-5. Optional: track face IDs with correlation filter or face embeddings.
-
-**Implementation:**
-
-* Use DeepFace for quick prototype.
-* Later: ResNet-50 fine-tuned with on-device quantization.
-* On Flutter: use TensorFlow Lite with GPU delegate.
-
----
-
-## Multimodal fusion in live systems <a name="fusion"></a>
-
-* **Late fusion**: combine predictions using exponential smoothing:
-
-  ```
-  fused_emotion = α * FER + (1-α) * SER
-  ```
-* **Early fusion**: merge embeddings and use attention block.
-* **Temporal fusion**: maintain history window to predict emotion trends.
-
-**Visualization:** moving emotion bar / emoji that updates smoothly based on recent frames. owo~
-
----
-
-## Latency optimization, streaming protocols & infrastructure <a name="latency"></a>
-
-**Tech choices:**
-
-* WebRTC for real-time low-latency streams.
-* WebSocket fallback for simpler setups.
-* On backend: async inference + thread pools.
-* Batch frames by small window (50–100ms) to reduce overhead.
-
-**Optimization checklist:**
-
-* Quantize models (INT8 / FP16).
-* Use ONNXRuntime with CUDA EP or TensorRT.
-* Compress frames to 224x224 JPEGs.
-* Use circular audio buffer to avoid reallocation.
-
----
-
-## Datasets, fine-tuning, and live data considerations <a name="datasets"></a>
-
-**Training:**
-
-* Use static datasets first (FER2013, RAVDESS, IEMOCAP).
-* Collect opt-in live data via app (with user consent).
-* Fine-tune models incrementally as live data grows.
-
-**Real-world variability:**
-
-* Different light levels, accents, mic quality.
-* Use online augmentation (noise injection, brightness jitter).
-
----
-
-## Privacy & ethical concerns for live emotion data <a name="privacy"></a>
-
-* Live feeds are sensitive! Always use user consent dialogs.
-* Never store raw media without opt-in.
-* Encrypt all traffic (TLS 1.2+).
-* Allow user to pause live recognition anytime.
-* Add a small visual cue (recording indicator) for transparency.
-
----
-
-## Roadmap for live system evolution <a name="roadmap"></a>
-
-**Phase 0:** Local prototype with periodic snapshots (React Native + FastAPI).
-**Phase 1:** Continuous live streaming with basic WebSocket (DeepFace + SER CNN).
-**Phase 2:** Low-latency WebRTC setup (Flutter + Go + ONNXRuntime).
-**Phase 3:** Transformer-based SER, ResNet-50 FER, attention fusion.
-**Phase 4:** Edge inference + on-device model distillation.
-
----
-
-## Appendix — cute tips & developer notes <a name="appendix"></a>
-
-✨ Keep FPS moderate (3–6 FPS for FER works fine).
-✨ Use asynchronous loops with small buffers to avoid memory leaks.
-✨ Add visual feedback (emotion emojis with soft animation).
-✨ Test on multiple devices with varying light/noise.
-✨ Always keep things user-friendly and privacy-safe. UwU 💞
-
----
-
-*Made with realtime love, happy threads, and big UwU energy.*
+This document is intended to be both a technical blueprint and an engineering checklist. Implementation requires close iteration with UX designers and audio/animation artists to refine avatar mappings. The system must be built incrementally: start with a deterministic mapping between AUs & blendshapes, then layer in learned fusion models and personalization.
